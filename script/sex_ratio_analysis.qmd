@@ -1,0 +1,902 @@
+---
+title: "Sex-ratios and wild DMRs"
+author:
+  - name: Hanna M Bensch
+    orcid: 0000-0002-8449-9843
+    email: hanna.bensch@lnu.se
+    affiliations:
+      - name: Centre for Ecology and Evolution in Microbial Model Systems – EEMiS, Linnaeus University, Kalmar, Sweden
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+    html:
+        toc: yes
+        toc_float:
+          collapse: no
+        fig_caption: yes
+        code_folding: hide
+bibliography: 
+  - grateful-refs.bib
+biblio-style: apalike
+link-citations: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+library(tidyverse)
+library(harrypotter)
+library(patchwork)
+library(knitr)
+library(grateful)
+library(lme4)
+library(lmerTest)
+library(msm)
+library(msmtools)
+```
+
+```{r setup, echo=F, cache = FALSE}
+#knitr::opts_chunk$set(echo = TRUE, fig.path='figures/',  dev = c('pdf', 'png'), dpi= 600, cache = TRUE) # for high resolution figures
+```
+
+# Introduction
+
+Here we explore the natural variation in within-group sex-ratios of wild Damaraland mole-rats, and its consequences on growth, reproduction and disappearance.
+
+## Sex-ratios of wild groups
+
+```{r}
+#| label: load-data
+#| include: false
+
+# group capture data
+grouptimes <- read_csv("../data/grouptimesSR.csv") %>% 
+  mutate(SessRef = as.character(SessRef),
+         CaptureStart = as.Date(CaptureStart),
+         CompleteCapture = as.character(CompleteCapture)) 
+
+# get the palette
+pal <- hp(n = 8, house = "LunaLovegood")
+pal <- pal[c(1,6)]
+
+# theme ggplots
+tm <- theme_classic() +
+        theme(axis.text=element_text(size=10, colour = "black"),
+        axis.title=element_text(size=10),
+        legend.position = "top",
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12))
+```
+
+### Data overview
+
+ 
+
+This data contains `r nrow(grouptimes)` group captures from `r nrow(grouptimes %>% select(GroupID) %>% unique())` groups. Group size range `r min(grouptimes$GroupSize)`- `r max(grouptimes$GroupSize)` and the sex-ratio range `r round(min(grouptimes$SexRatiomf), digits = 3)`- `r round(max(grouptimes$SexRatiomf), digits = 3)`. Mean sex-ratio was `r round(mean(grouptimes$SexRatiomf), digits = 3)` +- `r round(sd(grouptimes$SexRatiomf), digits = 3)` SD. Note that only captures with more than two individuals are included in this dataset. `r round((grouptimes %>% group_by(CompleteCapture) %>% summarise(perc = (n() / nrow(grouptimes)*100)) %>% select(perc))[1,1], digits = 3)` % of captures were incomplete.
+
+```{r, fig.width=10, fig.height=5}
+#| label: Figure1
+#| fig-cap: Figure 1. Histogram of group sizes (A) and male group bias (within-group sex-ratios) (B) of groupsizes (no single captures included). Black bars are complete captures and grey incomplete, where 24 h without activity was not recorded and the true group size and sex-ratio is not known.
+#| code-fold: true
+#| code-summary: "Show the code"
+
+p1a <- grouptimes %>%
+  ggplot(aes(x =GroupSize, fill = as.factor(CompleteCapture))) +
+  geom_histogram(binwidth = 1) +
+  scale_x_continuous(breaks = seq(0, 30, by = 4)) +
+  scale_fill_manual( values = c("grey", "black"), labels = c("Incomplete", "Complete")) +
+  tm +
+  labs(fill ="")+
+  xlab("Group size") 
+
+p1b <- grouptimes %>%
+  ggplot(aes(x =SexRatiomf, fill = as.factor(CompleteCapture))) +
+  geom_histogram(binwidth = 0.05) +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  scale_fill_manual( values = c("grey", "black"), labels = c("Incomplete", "Complete")) +
+  tm +
+  labs(fill ="") +
+  xlab("Male bias")
+
+p1a + p1b +
+  plot_annotation(tag_levels = 'A') + plot_layout(guides = "collect") &
+  theme(plot.tag = element_text(face = 'bold'), legend.position = "bottom")
+  
+```
+
+ 
+
+```{r, fig.width=5, fig.height=4}
+#| label: Figure2
+#| fig-cap: Figure 2. Scatterplot of Group size and within-group sex-ratio (jittered).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+p1 <- grouptimes %>%
+  ggplot(aes(x = GroupSize, y = SexRatiomf)) +
+  geom_jitter(shape =1 ) +
+  geom_hline(yintercept = 0.5, colour="grey", linetype = "longdash") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), limits = c(-0.01,1)) +
+  scale_x_continuous(breaks = seq(0, 30, by = 2), limits = c(0,27)) +
+  xlab("Group size") +
+  ylab("Male bias") +
+  labs(col ="") +
+  tm 
+p1
+#ggsave(filename = "p1.pdf",
+#       height = 7, width = 8.5, units = "cm",
+#  device ='pdf', dpi=300)
+```
+
+ 
+
+### Models
+
+ 
+
+**Any indication of an overall sex-ratio bias on the group level?**
+
+$$
+M1:
+SexRatiomf \sim 1 + (1|GroupID), weights = GroupSize
+$$
+
+```{r}
+#| label: M1a
+#| message: false
+#| tbl-cap: Table 1. Model summary M1 (GLMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+# test sex-ratio bias with binomial test
+M1 <- glmer(SexRatiomf ~ 1 + (1|GroupID), family="binomial", weights = GroupSize, 
+          data = grouptimes)
+
+df <- summary(M1)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...z..", "Std.Error"  = "Std..Error", "z-value" = "z.value")
+df %>% kable()
+```
+
+ 
+
+**Sex-ratio associated with group size?**
+
+$$
+M2:
+SexRatiomf \sim GroupSize + (1|GroupID), weights = GroupSize
+$$
+
+```{r}
+#| label: M2
+#| message: false
+#| tbl-cap: Table 2. Model summary M2 (GLMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+M2 <- glmer(SexRatiomf ~ GroupSize + (1|GroupID), family = "binomial", weights = GroupSize, 
+          data = grouptimes)
+
+# glmer with binom weights on group size
+df <- summary(M2)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...z..", "Std.Error"  = "Std..Error", "z-value" = "z.value")
+df %>% kable()
+
+```
+
+ 
+
+**Residual sex-ratio associated with group size?**
+
+$$
+M3:
+ResidSR \sim GroupSize
+$$
+
+```{r}
+#| label: M3
+#| message: false
+#| tbl-cap: Table 3. Model summary M3 (LM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+resid_test_df  <- cbind(grouptimes %>% select(GroupSize, SexRatiomf, GroupID),
+      resid(M2) %>% as_tibble() %>%
+  rename(residual = value) %>% 
+  mutate(residsq = abs(residual))) # neg values become positive
+
+M3 <- lm( residsq ~ GroupSize, data = resid_test_df)
+
+df <- summary(M3)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...t..", "Std.Error"  = "Std..Error", "t-value" = "t.value")
+df %>% kable()
+```
+
+ 
+
+## Recruitment of wild groups
+
+```{r}
+#| label: load-data-rec
+#| include: false
+# get breeder age
+recruitment <- read_csv("../data/recruitsSR.csv") # note here we also include pairs (4 group captures)
+recruitment <- recruitment %>%
+  filter(GroupSize >= 3) %>% 
+   mutate(WithinGroupRecruits.6mo = WithinGroupRecruits/TimeToNextCap*180,
+          SexRatioRec = (WithinGroupRecruitsF/TimeToNextCap*180) / (WithinGroupRecruits/TimeToNextCap*180)) 
+```
+
+ 
+
+For those groups where we have have recruitment data, that is recaptures with not too long time in between and ideally complete captures, we can test if the within group sex-ratio of the group predict the number of recruits and the sex-ratio of the new recruits. Let's try and do that here. Number of recruits is normalized to represent within a 6 month period, as done in Thorley et al. 2023 Evol. Lett.
+
+We standardize the number of recruits as following:
+
+$$
+withingrouprecruitmentrate.6mo = WithinGroupRecruits/TimeToNextCap*180
+$$
+
+### Models
+
+ 
+
+**Does group sex-ratio have an effect on number of recruits?**
+
+$$
+M4:
+NRecruits \sim SexRatioGroup + GroupSize + TimeToNextCap + scale(QueenAge) + (1|GroupID), weights = NRecruits
+$$
+
+```{r}
+#| label: model4
+#| tbl-cap: Table 4. Model summary M4 (LMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+M4 <- lmer(WithinGroupRecruits.6mo ~  SexRatiomf + GroupSize + scale(TimeToNextCap) + scale(QueenAge) +
+             (1|GroupID) , 
+           data = recruitment)
+
+df <- summary(M4)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...t..", "Std.Error"  = "Std..Error", "t-value" = "t.value")
+df %>% kable()
+
+```
+
+These analysis was done on `r nrow(recruitment)` group captures (which includes a paired group capture of between 100 and 365 days after).
+
+ 
+
+**Does sex-ratio of recruits "complement" sex-ratio of group?**
+
+$$
+M5:
+SexRatioRecruits \sim SexRatioGroup + GroupSize + TimeToNextCap + scale(QueenAge) + (1|GroupID), weights = NRecruits
+$$
+
+```{r}
+#| label: model5
+#| tbl-cap: Table 5. Model summary M5 (GLMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+recruitment2 <- recruitment %>% filter(!is.na(SexRatioRec)) 
+
+M5 <- glmer(SexRatioRec ~  SexRatiomf + GroupSize + scale(TimeToNextCap) + scale(QueenAge) + (1|GroupID), family="binomial",
+           weights=WithinGroupRecruits,
+           data = recruitment2)
+
+df <- summary(M5)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...z..", "Std.Error"  = "Std..Error", "z-value" = "z.value")
+df %>% kable()
+
+```
+
+This analysis was done on `r nrow(recruitment2)` group capture paris. Fewer group capture pairs comp M4 data as only those captures with at least one recruitment were included (0 recruitment would otherwise give sex-ratio of 0 - female bias).
+
+ 
+
+## Growth & Body condition nonbreeders
+
+```{r}
+#| label: load-data-gr
+#| include: false
+anal_data <- read_csv("../data/growth_bmi_SR.csv") %>% 
+  mutate(SessRef = as.character(SessRef),
+         SessRef2 = as.character(SessRef2))
+
+# subset to growth data analysis
+anal_datag <- anal_data %>% filter(!is.na(rate))
+#scale weight and rate within sex
+anal_datag <- anal_datag  %>% group_by(Sex) %>% 
+  mutate(scaleweight = scale(weight),
+         scalerate = scale(rate)) %>% ungroup() %>%
+  mutate(scaletimediff = scale(timediff))
+
+# subset to massindex data analysis
+anal_databm <- anal_data %>% filter(!is.na(massindex)) %>% 
+  group_by(Sex) %>% 
+  mutate(scaleweight = scale(weight)) %>% ungroup()
+
+```
+
+ 
+
+### Data overview
+
+In this data set I only include non-breeders that stayed within the group to the next capture. Group size at the first capture =\> 3 (range `r min(anal_data$GroupSize)`.- `r max(anal_data$GroupSize)`) and the 0 \< Sex-ratio \> 1 (range `r min(anal_data$SexRatiomf)`.- `r max(anal_data$SexRatiomf)`) - no group with only males or females.
+
+ 
+
+**Growth** 
+
+The growth dataset contained `r nrow(anal_datag %>% select(AnimalID, SessRef, SessRef2) %>% pivot_longer(cols = c(2:3)) %>% select(-name) %>% unique())` animal captures that were used to calculate `r nrow(anal_datag)` growth measures from `r nrow(anal_datag %>% select(AnimalID) %>% unique())` unique individuals and a total of `r nrow(anal_datag %>% select(AnimalID, Sex) %>% filter(Sex =="Female") %>% unique())` females and `r nrow(anal_datag %>% select(AnimalID, Sex) %>% filter(Sex =="Male") %>% unique())` males. Data was collected from `r nrow(anal_datag %>% select(GroupID) %>% unique())` groups and `r nrow(anal_datag %>% select(GroupID, SessRef, SessRef2) %>% pivot_longer(cols = c(2:3)) %>% select(-name) %>% unique())` group captures.
+
+ 
+
+**Massindex**
+
+The masssindex dataset contained `r nrow(anal_databm %>% select(AnimalID, SessRef)%>% unique())` animal captures that were used to calculate `r nrow(anal_databm)` growth measures from `r nrow(anal_databm %>% select(AnimalID) %>% unique())` unique individuals (`r nrow(anal_databm %>% select(AnimalID, Sex) %>% filter(Sex =="Female") %>% unique())` females and `r nrow(anal_databm %>% select(AnimalID, Sex) %>% filter(Sex =="Male") %>% unique())` males). Data was collected from `r nrow(anal_databm %>% select(GroupID) %>% unique())` groups and `r nrow(anal_databm %>% select(GroupID, SessRef) %>% unique())` group captures.
+
+ 
+
+### Model
+
+**Is growth influenced by the within-group sex-ratio?**
+
+$$
+M6:
+growthrate \sim weight + Sex * SexRatiomf + GroupSize + timediff + (1|GroupID) + (1|AnimalID) + (1|SessRef)
+$$
+
+ 
+
+```{r}
+#| label: M6
+#| tbl-cap: Table 6. Model summary M6.
+#| code-fold: true
+#| code-summary: "Show the code"
+
+# including interaction
+M6 <- lmer(scalerate ~ scaleweight + Sex * SexRatiomf + GroupSize + scaletimediff +
+          (1|GroupID) + (1|AnimalID) + (1|SessRef),
+         data = anal_datag)
+
+summary(M6)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+  rownames_to_column("factor") %>% rename("p-value" = "Pr...t..", "Std.Error"  = "Std..Error", "t-value" = "t.value") %>% 
+  select(-df) %>%
+  kable()
+```
+
+ 
+
+```{r}
+#| label: Figure3
+#| fig-cap: Figure 3. Predicted relative body mass change of wild non-breeders in g/day in relation to the group’s sex-ratio as proportion of males within group at the first capture and mean weight for each sex. Predictions for females displayed with green solid line and males with purple dashed line, shaded surrounding area represent 95 % confidence intervals of the predicted values.
+#| code-fold: true
+#| code-summary: "Show the code"
+
+pd1 <-data.frame(SexRatiomf=seq(from = 0.29,
+                                to = 0.88, by=0.01)) # do not include the extremes only represented by both sexes
+pd1$Sex<-rep("Male",60)
+m <- mean(anal_datag$GroupSize[anal_datag$Sex=="Male"])
+pd1$GroupSize<-rep(m,60)
+m <- mean(na.omit(anal_datag$scaleweight[anal_datag$Sex=="Male"]))
+pd1$scaleweight<-rep(m,60)
+m <- mean(na.omit(anal_datag$scaletimediff[anal_datag$Sex=="Male"]))
+pd1$scaletimediff<-rep(m,60)
+pd1$scalerate<-predict(M6, newdata=pd1, type="response", re.form = NA)
+
+pd2<-data.frame(SexRatiomf=seq(from = 0.29,
+                                to = 0.88, by=0.01))
+pd2$Sex<-rep("Female",60)
+f <- mean(anal_datag$GroupSize[anal_datag$Sex=="Female"])
+pd2$GroupSize<-rep(f,60)
+f <- mean(na.omit(anal_datag$scaleweight[anal_datag$Sex=="Female"]))
+pd2$scaleweight<-rep(f,60)
+m <- mean(na.omit(anal_datag$scaletimediff[anal_datag$Sex=="Female"]))
+pd2$scaletimediff<-rep(m,60)
+pd2$scalerate<-predict(M6, newdata=pd2, type="response", re.form = NA)
+
+pd3 <- rbind(pd1, pd2)
+
+# plot the predictions
+#head(pd3) # now we don't have the extremes
+mmpd3 <- model.matrix(terms(M6), pd3)
+
+pvar1pd3 <- diag(mmpd3 %*% tcrossprod(vcov(M6), mmpd3))
+cmult = 1.96
+
+preddatpd3 <- data.frame(
+  pd3,
+  plo = pd3$scalerate-cmult*sqrt(pvar1pd3)
+  , phi = pd3$scalerate+cmult*sqrt(pvar1pd3)
+)
+
+p3 <- ggplot(preddatpd3, aes(x = SexRatiomf, y = scalerate, group = Sex))
+p3 <- p3 + geom_line(aes(colour = factor(Sex), linetype = factor(Sex)))+ 
+  geom_ribbon(aes(ymin=plo, ymax=phi, fill = factor(Sex)), alpha = 0.5) +  
+  ylab("Predicted growth rate (scaled)") +
+  xlab("Male-bias") +
+  labs(fill = "Sex") + 
+  tm +
+  scale_fill_manual( values = pal) +
+  scale_colour_manual( values = pal) +
+  labs(color  = "Sex", linetype = "Sex", fill = "Sex")
+p3
+
+```
+
+
+ 
+
+**Is body condition of non-breeders influenced by within-group sex-ratio?**
+
+```{r}
+#| label: plot4
+#| fig-cap: Figure 4. Plot of body massindex and the sex-ratio within group. 
+#| code-fold: true
+#| code-summary: "Show the code"
+
+p5 <- 
+  anal_databm %>%
+  ggplot(aes(x = SexRatiomf, y = massindex)) +
+  geom_point(aes(colour = Sex, shape = Sex), alpha = 0.6) +
+  theme_classic() +
+  labs(fill = "Sex") + 
+  xlim(0,1) +
+  tm +
+  scale_colour_manual( values = pal) +
+  ylab("Body condition") +
+  xlab("Male-bias")
+p5
+```
+
+$$
+M7: 
+body condition \sim Sex * SexRatiomf + weight + (1|GroupID) + (1|AnimalID) + (1|SessRef)
+$$
+
+ 
+
+```{r}
+#| label: M7a
+#| tbl-cap: Table 7. Summary Model M7a (LMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+                            
+# include interaction
+M7 <- lmer(massindex ~ Sex*SexRatiomf + GroupSize + scaleweight + 
+             (1|AnimalID) + (1|GroupID) + (1|SessRef),  data = anal_databm )
+
+
+summary(M7)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+ rownames_to_column("factor") %>% rename("p-value" = "Pr...t..", "Std.Error"  = "Std..Error", "t-value" = "t.value") %>%
+  kable()
+```
+
+Exclude the interaction which was NS:
+
+```{r}
+#| label: M7
+#| tbl-cap: Table 8. Summary Model M7 (LMM).
+#| code-fold: true
+#| code-summary: "Show the code"
+
+# include interaction
+M7 <- lmer(massindex ~ Sex + SexRatiomf + GroupSize + scaleweight + 
+             (1|AnimalID) + (1|GroupID) + (1|SessRef),  data = anal_databm )
+
+
+summary(M7)$coefficients  %>% round(., digits = 3) %>% data.frame() %>% 
+ rownames_to_column("factor") %>% rename("p-value" = "Pr...t..", "Std.Error"  = "Std..Error", "t-value" = "t.value") %>%
+  kable()
+```
+
+```{r}
+#| label: combinedp3p5
+#| fig-cap: Fig 5. combined plot for paper.
+#| fig-height: 5
+#| fig-width: 12
+#| code-fold: true
+#| code-summary: "Show the code"
+
+p2 <- p3 + p5 + plot_annotation(tag_levels = 'A') &
+    theme(plot.tag = element_text(face = 'bold'))
+
+p2
+#ggsave(filename = "p2.pdf",
+#       height = 7, width = 11.7, units = "cm",
+#  device ='pdf', dpi=300)
+```
+
+ 
+
+## Survival/Disappearance
+
+```{r}
+#| label: load-data-msm
+#| include: false
+
+msm_data <- read_tsv("../data/msm_data.tsv") %>% #
+  mutate(SessRef = as.character(SessRef),
+         Sex = as.factor(Sex))
+
+```
+
+#### Data overview
+
+Group size range `r min(na.omit(msm_data$GroupSize))`.- `r max(na.omit(msm_data$GroupSize))`. The data set contained `r nrow(msm_data %>% filter(!is.na(weight)))` animal captures from `r nrow(msm_data %>% filter(!is.na(weight)) %>% select(SessRef) %>% unique())` group captures of `r nrow(msm_data %>% filter(!is.na(weight)) %>% select(GroupID) %>% unique())` groups and `r nrow(msm_data %>% select(AnimalID) %>% unique())` unique individuals (`r nrow(msm_data %>% select(AnimalID, Sex) %>% filter(Sex =="Female") %>% unique())` females and `r nrow(msm_data %>% select(AnimalID, Sex) %>% filter(Sex =="Male") %>% unique())` males).
+
+ 
+
+### Model
+
+**Does within-group sex-ratio have an effect on time of disappearance of nonbreeders?**
+
+$$
+state \sim  Time.years, subject = AnimalID, censor = 99, censor.states = c(1),
+                        covariates = ~ Sex * Scale_sexratio + ScaledWeight + Rainfall.s
+$$
+
+
+```{r}
+#| label: model-msm-2b
+#| code-fold: true
+#| code-summary: "Show the code"
+
+# set up the q matrix for the transitions (assume that individuals can transition from non-breeder to gone or known out of group)
+philopatry.q <- rbind(c(0, 0.5), 
+                      c(0, 0))
+
+rownames(philopatry.q) <- colnames(philopatry.q) <- c("ingroup", "Disappeared/Dispersed")
+
+# model including sex-ratio interaction with sex
+philopatry.msm <- msm(state ~ Time.years, subject = AnimalID, censor = 99, censor.states = c(1),
+                        covariates = ~ Sex * Scale_sexratio + ScaledWeight + Rainfall.s
+                          , data = msm_data, 
+                        qmatrix = philopatry.q, na.action = na.fail, 
+                        control = list(fnscale = 4000, maxit = 10000))
+#philopatry.msm
+#summary(philopatry.msm)
+#hazard.msm(philopatry.msm) 
+philopatry.msm$ncovs
+#plot.survfit.msm(philopatry.msm, from = 1) # overall
+```
+
+
+```{r}
+#| label: model-msm-2-hz
+#| tbl-cap: Table 9. Hazard covariates msm-model.
+#| code-fold: true
+#| code-summary: "Show the code"
+
+rbind(
+hazard.msm(philopatry.msm)[[1]] %>% as.data.frame() %>% mutate(Covariate = "SexMale", .before = 1),
+hazard.msm(philopatry.msm)[[2]] %>% as.data.frame() %>% mutate(Covariate = "sex-ratio", .before = 1),
+hazard.msm(philopatry.msm)[[3]] %>% as.data.frame() %>% mutate(Covariate = "Weight", .before = 1),
+hazard.msm(philopatry.msm)[[4]] %>% as.data.frame() %>% mutate(Covariate = "Rainfall", .before = 1),
+hazard.msm(philopatry.msm)[[5]] %>% as.data.frame() %>% mutate(Covariate = "Sex*sex-ratio", .before = 1)) %>% 
+  mutate_if(is.numeric, ~round(., 3)) %>%
+  kable(row.names = F)
+
+```
+
+```{r}
+#| label: model-msm-plotdata
+#| include: false
+
+# as this takes time to run, the plot data is saved in chunk to run once and then simply load in the following chunk before knitting
+# high sex-ratio females
+philopatry.prevalence.msm.femalesH <- msm:::prevalence.msm(philopatry.msm, ci = "normal", 
+                                                          covariates = list(Sex = "Female",
+                                                                            ScaledWeight = 0,
+                                                                            Rainfall.s = 0,
+                                                                            Scale_sexratio = 0.25))
+# low sex-ratio females
+philopatry.prevalence.msm.femalesL <- msm:::prevalence.msm(philopatry.msm, ci = "normal", 
+                                                          covariates = list(Sex = "Female", 
+                                                                            ScaledWeight = 0,
+                                                                            Rainfall.s = 0,
+                                                                            Scale_sexratio = -0.125))
+# high sex-ratio males
+philopatry.prevalence.msm.malesH <- msm:::prevalence.msm(philopatry.msm, ci = "normal", 
+                                                        covariates = list(Sex = "Male", 
+                                                                          ScaledWeight = 0,
+                                                                            Rainfall.s = 0,
+                                                                          Scale_sexratio = 0.25))
+# low sex-ratio males
+philopatry.prevalence.msm.malesL <- msm:::prevalence.msm(philopatry.msm, ci = "normal", 
+                                                          covariates = list(Sex = "Male", 
+                                                                            ScaledWeight = 0,
+                                                                            Rainfall.s = 0,
+                                                                            Scale_sexratio = -0.125))
+
+# females, observed prevalence
+femalephilopatry.observed <- philopatry.prevalence.msm.femalesH[[3]] %>% 
+  data.frame() %>% 
+  mutate(Time = as.numeric(row.names(.))) %>% 
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "observedprevalence")
+
+# females, expected percentage/prevalence - mean
+femalephilopatry.expected <- philopatry.prevalence.msm.femalesH$`Expected percentages`$estimates %>% 
+  data.frame() %>% 
+  mutate(Time = as.numeric(row.names(.))) %>% 
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "expectedprevalenceH") %>%
+  left_join(
+    philopatry.prevalence.msm.femalesL$`Expected percentages`$estimates %>% 
+    data.frame() %>% 
+    mutate(Time = as.numeric(row.names(.))) %>% 
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "expectedprevalenceL"))
+
+#  females, expected percentage/prevalence - l95%CI
+femalephilopatry.expectedci <- philopatry.prevalence.msm.femalesH$`Expected percentages`$ci[,,1]%>% 
+  data.frame() %>% 
+  mutate(Time = unique(femalephilopatry.expected$Time)) %>%  
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "l95ciH") %>%
+  left_join(
+    philopatry.prevalence.msm.femalesL$`Expected percentages`$ci[,,1]%>% 
+      data.frame() %>%
+      mutate(Time = unique(femalephilopatry.expected$Time)) %>% 
+      rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+      pivot_longer(-Time, names_to = "state", values_to = "l95ciL") ) %>%
+  #  females, expected percentage/prevalence - u95%CI %>%
+  left_join(
+    philopatry.prevalence.msm.femalesH$`Expected percentages`$ci[,,2]%>% 
+    data.frame() %>% 
+    mutate(Time = unique(femalephilopatry.expected$Time)) %>%  
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "u95ciH") %>%
+    left_join(philopatry.prevalence.msm.femalesL$`Expected percentages`$ci[,,2]%>% 
+    data.frame() %>% 
+    mutate(Time = unique(femalephilopatry.expected$Time)) %>%  
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "u95ciL") ))
+
+femalephilopatry.expected2 <- femalephilopatry.expected %>%
+  left_join(femalephilopatry.expectedci) %>% filter(state == "ingroup")
+
+# males, observed prevalence
+malephilopatry.observed <- philopatry.prevalence.msm.malesH[[3]] %>% 
+  data.frame() %>% 
+  mutate(Time = as.numeric(row.names(.))) %>% 
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "observedprevalence")
+
+# males, expected percentage/prevalence - mean
+malephilopatry.expected <- philopatry.prevalence.msm.malesH$`Expected percentages`$estimates %>% 
+  data.frame() %>% 
+  mutate(Time = as.numeric(row.names(.))) %>% 
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "expectedprevalenceH") %>%
+  left_join(
+    philopatry.prevalence.msm.malesL$`Expected percentages`$estimates %>% 
+    data.frame() %>% 
+    mutate(Time = as.numeric(row.names(.))) %>% 
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "expectedprevalenceL"))
+
+#  males, expected percentage/prevalence - l95%CI
+malephilopatry.expectedci <- philopatry.prevalence.msm.malesH$`Expected percentages`$ci[,,1]%>% 
+  data.frame() %>% 
+  mutate(Time = unique(malephilopatry.expected$Time)) %>%  
+  rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+  pivot_longer(-Time, names_to = "state", values_to = "l95ciH") %>%
+  left_join(
+    philopatry.prevalence.msm.malesL$`Expected percentages`$ci[,,1]%>% 
+      data.frame() %>%
+      mutate(Time = unique(malephilopatry.expected$Time)) %>% 
+      rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+      pivot_longer(-Time, names_to = "state", values_to = "l95ciL") ) %>%
+  #  females, expected percentage/prevalence - u95%CI %>%
+  left_join(
+    philopatry.prevalence.msm.malesH$`Expected percentages`$ci[,,2]%>% 
+    data.frame() %>% 
+    mutate(Time = unique(malephilopatry.expected$Time)) %>%  
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "u95ciH") %>%
+    left_join(philopatry.prevalence.msm.malesL$`Expected percentages`$ci[,,2]%>% 
+    data.frame() %>% 
+    mutate(Time = unique(malephilopatry.expected$Time)) %>%  
+    rename(ingroup = names(.)[1], outgroup = names(.)[2]) %>% 
+    pivot_longer(-Time, names_to = "state", values_to = "u95ciL") ))
+
+malephilopatry.expected2 <- malephilopatry.expected %>% 
+  left_join(malephilopatry.expectedci ) %>%
+  filter(state == "ingroup")
+
+# coimbine for ggplot
+pdat <- rbind(
+femalephilopatry.expected2 %>% select(Time,expectedprevalenceH, expectedprevalenceL) %>%
+  rename(MaleBiased = expectedprevalenceH, FemaleBiased = expectedprevalenceL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="Exp") %>%
+  left_join(
+femalephilopatry.expected2 %>% select(Time,l95ciH, l95ciL) %>%
+  rename(MaleBiased = l95ciH, FemaleBiased = l95ciL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="l95ci")) %>%
+  left_join(
+femalephilopatry.expected2 %>% select(Time,u95ciH, u95ciL) %>%
+  rename(MaleBiased = u95ciH, FemaleBiased = u95ciL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="u95ci")) %>%
+  mutate(Sex ="Female", .before= 1),
+malephilopatry.expected2 %>% select(Time,expectedprevalenceH, expectedprevalenceL) %>%
+  rename(MaleBiased = expectedprevalenceH, FemaleBiased = expectedprevalenceL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="Exp") %>%
+  left_join(
+malephilopatry.expected2 %>% select(Time,l95ciH, l95ciL) %>%
+  rename(MaleBiased = l95ciH, FemaleBiased = l95ciL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="l95ci")) %>%
+  left_join(
+malephilopatry.expected2 %>% select(Time,u95ciH, u95ciL) %>%
+  rename(MaleBiased = u95ciH, FemaleBiased = u95ciL) %>%
+  pivot_longer(-Time, names_to = "Exptype", values_to ="u95ci")) %>%
+  mutate(Sex ="Male", .before= 1))
+
+# write as csv
+#pdat %>%
+#  write_csv("../data/msm_plotdata.csv")
+```
+
+```{r}
+#| label: Figure5
+#| fig-cap: Figure 5. MSM-plot including all factors model.
+#| code-fold: true
+#| code-summary: "Show the code"
+#| message: false
+
+pdat <- read_csv("../data/msm_plotdata.csv") # load as take time to run chunk above
+
+p3pf <- pdat %>%
+  filter(Sex =="Female") %>% 
+  ggplot(aes(x = Time, y = Exp)) + 
+  geom_line(aes(linetype = factor(Exptype), colour = as.factor(Exptype))) +
+  geom_ribbon(aes(ymin = l95ci, ymax = u95ci, fill = as.factor(Exptype)), 
+              alpha=0.4, 
+              colour= NA) +
+  theme_classic() +
+  theme(axis.text =element_text(size=10, colour = "black"),
+        axis.title = element_text(size=10),
+        legend.position = "top",
+        legend.text = element_text(size = 12),
+        legend.title = element_blank(),
+        strip.background = element_blank()) +
+  scale_fill_manual( values = pal, labels=c( "Female Biased", "Male Biased")) +
+  scale_colour_manual( values = pal, labels=c( "Female Biased", "Male Biased")) +
+  scale_linetype_manual( values= c("solid", "dashed"), labels=c( "Female Biased", "Male Biased")) +
+  labs(linetype = "Exptype", colour  = "Exptype", fill = "Exptype") +
+  ylab("Probability of presence in natal group (%)") +
+  xlab("Time (years)") 
+
+p3pm <- pdat %>%
+  filter(Sex =="Male") %>% 
+  ggplot(aes(x = Time, y = Exp)) + 
+  geom_line(aes(linetype = factor(Exptype), colour = as.factor(Exptype))) +
+  geom_ribbon(aes(ymin = l95ci, ymax = u95ci, fill = as.factor(Exptype)), 
+              alpha=0.4, 
+              colour= NA) +
+  theme_classic() +
+  theme(axis.text =element_text(size=10, colour = "black"),
+        axis.title = element_text(size=10),
+        legend.position = "top",
+        legend.text = element_text(size = 12),
+        legend.title = element_blank(),
+        strip.background = element_blank()) +
+  scale_fill_manual( values = pal, labels=c( "Female Biased", "Male Biased")) +
+  scale_colour_manual( values = pal, labels=c( "Female Biased", "Male Biased")) +
+  scale_linetype_manual( values= c("solid", "dashed"), labels=c( "Female Biased", "Male Biased")) +
+  labs(linetype = "Exptype", colour  = "Exptype", fill = "Exptype") +
+  ylab("Probability of presence in natal group (%)") +
+  xlab("Time (years)")
+p3pm
+
+
+p3p <- p3pf + p3pm + plot_annotation(tag_levels = 'A') &
+    theme(plot.tag = element_text(face = 'bold'),
+          legend.position = "bottom") 
+p3p +  
+    plot_layout(guides = "collect")
+
+#ggsave(filename = "p3.pdf",
+#       height = 10, width = 17.7, units = "cm",
+#  device ='pdf', dpi=300)
+```
+
+
+# Model checks
+
+```{r}
+#| label: mheckfunction
+#| include: false
+
+mcheck<-function(obj,...){
+  rs<-resid(obj)
+  fv<-fitted(obj)
+  par(mfrow=c(1,3))
+  plot(fv,rs,xlab="FITTED VALUES",ylab="RESIDUALS")
+  abline(h=0,lty=2,lwd=2)
+  qqnorm(rs,xlab="NORMAL SCORES",ylab="ORDERED RESIDUALS",main="")
+  qqline(rs,lty=2,lwd=2)
+  hist(resid(obj),xlab="RESIDUALS",ylab="FREQUENCY",main="")
+  par(mfrow=c(1,1))
+  invisible(NULL)
+}
+
+```
+
+```{r}
+#| label: mheck1
+#| fig-cap: Figure 6. Residuals checks body mass model 1.
+#| echo: false
+
+mcheck(M1)
+
+```
+
+```{r}
+#| label: mheck2
+#| fig-cap: Figure 7. Residuals checks body mass model 2.
+#| echo: false
+
+mcheck(M2)
+
+```
+
+```{r}
+#| label: mheck3
+#| fig-cap: Figure 8. Residuals checks body mass model 3.
+#| echo: false
+
+mcheck(M3)
+
+```
+
+
+```{r}
+#| label: mheck4
+#| fig-cap: Figure 9. Residuals checks body mass model 4.
+#| echo: false
+
+mcheck(M4)
+
+```
+
+
+```{r}
+#| label: mheck5
+#| fig-cap: Figure 10. Residuals checks body mass model 5.
+#| echo: false
+
+mcheck(M5)
+
+```
+
+```{r}
+#| label: mheck6
+#| fig-cap: Figure 11. Residuals checks body mass model 6.
+#| echo: false
+
+mcheck(M6)
+
+```
+
+```{r}
+#| label: mheck7
+#| fig-cap: Figure 12. Residuals checks body mass model 7.
+#| echo: false
+
+mcheck(M7)
+
+```
+# R and packages
+
+This analysis was run with `r R.version$version.string`. Versions of packages used can be found in Table 10 below.
+
+```{r cite-packages, cache = FALSE}
+#| echo: false
+#| tbl-cap: Table 10. Model estimates random factors body condition full model.
+cite_packages(pkgs ="Session", output = "table") %>%
+  kable()
+```

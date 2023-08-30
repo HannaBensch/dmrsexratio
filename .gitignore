@@ -1,0 +1,15 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
+*.html
+*.docx
+*.png
+*.js
+*.css
+*.woff
+*.pdf
+*.rds
+*.bib
+*.Rproj
